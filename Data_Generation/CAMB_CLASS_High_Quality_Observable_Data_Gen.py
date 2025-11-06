@@ -59,7 +59,7 @@ class LCDM:
 # Sampling configuration mirrors LHC_Gen_YAML.py
 # --------------------------------------------------------------------------------------
 
-DEFAULT_BATCH_SIZE = 10
+DEFAULT_BATCH_SIZE = 1
 DEFAULT_OUTPUT = Path("./sh_batch_outputs")
 
 K_VALS = np.logspace(-4, 1, 200)
@@ -377,7 +377,7 @@ def configure_class(p: Dict[str, float], lmax: int = L_MAX, nonlinear: bool = Tr
         'n_s': p['ns'],
         'T_cmb': Planck.Tcmb0.value,
         'YHe': 'BBN',
-        'z_max_pk': max(p.get('z_pk'), 0.0) + 0.5,
+        'z_max_pk': 35,
         'N_ncdm': int(p.get('deg_ncdm', 1)),
         'm_ncdm': p['m_ncdm_str'],
         'N_ur': p['N_ur'],
@@ -500,12 +500,9 @@ def compute_class_observables(p: Dict[str, float]) -> Dict[str, np.ndarray]:
     ell_unlensed = cls_raw['ell']
     ell_factor_unlensed = ell_unlensed * (ell_unlensed + 1) / (2 * np.pi)
 
-    print("  [CLASS] Computing matter power spectra (P(k))...")
-    pk_lin = np.array([cl_nl.pk_lin(k, p.get('z_pk')) for k in K_VALS])
+    print("  [CLASS] Computing nonlinear matter power spectra (P(k))...")
     pk_nonlin = np.array([cl_nl.pk(k, p.get('z_pk')) for k in K_VALS])
-
     pk_nonlin_cb = np.array([cl_nl.pk_cb(k, p.get('z_pk')) for k in K_VALS])
-    pk_lin_cb = np.array([cl_nl.pk_cb_lin(k, p.get('z_pk')) for k in K_VALS])
 
     print("  [CLASS] Computing background quantities (H(z), D_A(z))...")
     H_class = np.array([cl_nl.Hubble(z) for z in Z_BG]) * 299792.458
@@ -519,6 +516,28 @@ def compute_class_observables(p: Dict[str, float]) -> Dict[str, np.ndarray]:
     print("  [CLASS] Cleaning up nonlinear CLASS instance...")
     cl_nl.struct_cleanup()
     cl_nl.empty()
+
+    print("  [CLASS] Running linear calculation...")
+    class_params_lin = configure_class(p, lmax=L_MAX, nonlinear=False, BB=False)
+    cl_lin = classy.Class()
+    cl_lin.set(class_params_lin)
+    cl_lin.compute()
+
+    print("  [CLASS] Computing nonlinear matter power spectra (P(k))...")
+    pk_lin = np.array([cl_lin.pk_lin(k, p.get('z_pk')) for k in K_VALS])
+    pk_lin_cb = np.array([cl_lin.pk_cb_lin(k, p.get('z_pk')) for k in K_VALS])
+
+    print("  [CLASS] Computing scale-independent growth quantities...")
+    k0 = 1e-5  # small k for scale independent limit
+    growth_factor = np.array([cl_lin.scale_dependent_growth_factor_D(k0, z) for z in Z_BG])
+    growth_factor /= growth_factor[0]  # normalize
+    lnD = np.log(growth_factor)
+    dlnD_dz = np.gradient(lnD, Z_BG)
+    growth_rate = -(1 + Z_BG) * dlnD_dz
+
+    print("  [CLASS] Cleaning up linear CLASS instance...")
+    cl_lin.struct_cleanup()
+    cl_lin.empty()
 
     print("  [CLASS] Running B-mode (BB) tensor calculation...")
     class_params_bb = configure_class(p, lmax=L_MAX, nonlinear=True, BB=True)
@@ -537,19 +556,19 @@ def compute_class_observables(p: Dict[str, float]) -> Dict[str, np.ndarray]:
     print("  [CLASS] Finished full CLASS observable computation ✅")
 
     return {
-        'ell_lensed': ell_lensed,
-        'cl_tt_lensed': cls_l['tt'] * ell_factor,
-        'cl_ee_lensed': cls_l['ee'] * ell_factor,
-        'cl_bb_lensed': cls_l['bb'] * ell_factor,
-        'cl_te_lensed': cls_l['te'] * ell_factor,
-        'ell_phi_phi': ell_lensed,
-        'cl_phi_phi': cls_l['pp'],
-        'ell_unlensed': ell_unlensed,
-        'cl_tt_unlensed': cls_raw['tt'] * ell_factor_unlensed,
-        'cl_ee_unlensed': cls_raw['ee'] * ell_factor_unlensed,
-        'cl_te_unlensed': cls_raw['te'] * ell_factor_unlensed,
-        'ell_bb_unlensed': ell_unlensed_bb[:500],
-        'cl_bb_unlensed': cl_bb_unlensed[:500],
+        'ell_lensed': ell_lensed[2:],
+        'cl_tt_lensed': cls_l['tt'][2:] * ell_factor[2:],
+        'cl_ee_lensed': cls_l['ee'][2:] * ell_factor[2:],
+        'cl_bb_lensed': cls_l['bb'][2:] * ell_factor[2:],
+        'cl_te_lensed': cls_l['te'][2:] * ell_factor[2:],
+        'ell_phi_phi': ell_lensed[2:],
+        'cl_phi_phi': cls_l['pp'][2:],
+        'ell_unlensed': ell_unlensed[2:],
+        'cl_tt_unlensed': cls_raw['tt'][2:] * ell_factor_unlensed[2:],
+        'cl_ee_unlensed': cls_raw['ee'][2:] * ell_factor_unlensed[2:],
+        'cl_te_unlensed': cls_raw['te'][2:] * ell_factor_unlensed[2:],
+        'ell_bb_unlensed': np.arange(2, 2 + len(cl_bb_unlensed[2:501])),
+        'cl_bb_unlensed': cl_bb_unlensed[2:501],
         'pk_k': K_VALS,
         'pk_linear': pk_lin,
         'pk_nonlinear': pk_nonlin,
@@ -558,6 +577,8 @@ def compute_class_observables(p: Dict[str, float]) -> Dict[str, np.ndarray]:
         'background_z': Z_BG,
         'background_Hz': H_class,
         'background_DAz': DA_class,
+        'scale_independent_growth_factor': growth_factor,
+        'scale_independent_growth_rate': growth_rate,
         'derived_theta_star': derived['100*theta_s'],
         'derived_sigma8': derived['sigma8'],
         'derived_YHe': derived['YHe'],
@@ -620,18 +641,40 @@ def compute_camb_observables(p: Dict[str, float]) -> Dict[str, np.ndarray]:
     }
     print("  [CAMB] Derived parameters extracted ✅")
 
-    print("  [CAMB] Computing linear matter power spectra...")
+    print("  [CAMB] Computing linear matter power spectra and growth quantities...")
     camb_params_lin = configure_camb_params(p, nonlinear=False, lmax=L_MAX)
-    pk_lin = camb.get_matter_power_interpolator(
-        camb_params_lin, nonlinear=False, hubble_units=False, k_hunit=False, kmax=35, zmax=3
-    ).P(p.get('z_pk'), K_VALS)
-    print("  [CAMB] Linear P(k) computed ✅")
+    growth_redshifts = sorted({
+        0.0,
+        float(p.get('z_pk', 0.0)),
+        float(np.max(Z_BG))
+    })
+    camb_params_lin.set_matter_power(
+        redshifts=growth_redshifts,
+        kmax=10,
+        k_per_logint=130
+    )
+    zmax_growth = max(float(np.max(Z_BG)), float(p.get('z_pk', 0.0)))
+    pk_interp_lin = camb.get_matter_power_interpolator(
+        camb_params_lin, nonlinear=False, hubble_units=False, k_hunit=False, kmax=35, zmax=zmax_growth
+    )
+    pk_lin = pk_interp_lin.P(p.get('z_pk'), K_VALS)
+    growth_k = 1e-5
+    growth_pk = np.array([pk_interp_lin.P(z, growth_k) for z in Z_BG])
+    growth_pk0 = np.maximum(growth_pk[0], 1e-30)
+    growth_factor = np.sqrt(np.maximum(growth_pk, 1e-30) / growth_pk0)
+    growth_factor = growth_factor / growth_factor[0]
+    lnD = np.log(growth_factor)
+    dlnD_dz = np.gradient(lnD, Z_BG)
+    growth_rate = -(1 + Z_BG) * dlnD_dz
+
+    print("  [CAMB] Linear P(k) and growth quantities computed ✅")
 
     print("  [CAMB] Computing linear CDM+baryon matter power spectra (P_cb_lin(k))...")
-    pk_lin_cb = camb.get_matter_power_interpolator(
-        camb_params_lin, nonlinear=False, hubble_units=False, k_hunit=False, kmax=35, zmax=3,
+    pk_interp_lin_cb = camb.get_matter_power_interpolator(
+        camb_params_lin, nonlinear=False, hubble_units=False, k_hunit=False, kmax=35, zmax=zmax_growth,
         var1='delta_nonu', var2='delta_nonu'
-    ).P(p.get('z_pk'), K_VALS)
+    )
+    pk_lin_cb = pk_interp_lin_cb.P(p.get('z_pk'), K_VALS)
     print("  [CAMB] Linear P_cb(k) computed ✅")
 
     print("  [CAMB] Running B-mode (BB) tensor calculation...")
@@ -643,19 +686,19 @@ def compute_camb_observables(p: Dict[str, float]) -> Dict[str, np.ndarray]:
     print("  [CAMB] Finished full CAMB observable computation ✅")
 
     return {
-        'ell_lensed': np.arange(lensed_cls.shape[0]),
-        'cl_tt_lensed': lensed_cls.T[0],
-        'cl_ee_lensed': lensed_cls.T[1],
-        'cl_bb_lensed': lensed_cls.T[2],
-        'cl_te_lensed': lensed_cls.T[3],
-        'ell_phi_phi': np.arange(lp_camb.shape[0]),
-        'cl_phi_phi': lp_camb[:, 0],
-        'ell_unlensed': np.arange(unlensed_cls.shape[0]),
-        'cl_tt_unlensed': unlensed_cls.T[0],
-        'cl_ee_unlensed': unlensed_cls.T[1],
-        'cl_te_unlensed': unlensed_cls.T[3],
-        'ell_bb_unlensed': np.arange(len(bb_unlensed.T[2][:500])),
-        'cl_bb_unlensed': bb_unlensed.T[2][:500],
+        'ell_lensed': np.arange(lensed_cls.shape[0])[2:],
+        'cl_tt_lensed': lensed_cls.T[0][2:],
+        'cl_ee_lensed': lensed_cls.T[1][2:],
+        'cl_bb_lensed': lensed_cls.T[2][2:],
+        'cl_te_lensed': lensed_cls.T[3][2:],
+        'ell_phi_phi': np.arange(lp_camb.shape[0])[2:],
+        'cl_phi_phi': lp_camb[2:, 0],
+        'ell_unlensed': np.arange(unlensed_cls.shape[0])[2:],
+        'cl_tt_unlensed': unlensed_cls.T[0][2:],
+        'cl_ee_unlensed': unlensed_cls.T[1][2:],
+        'cl_te_unlensed': unlensed_cls.T[3][2:],
+        'ell_bb_unlensed': np.arange(2, 2 + len(bb_unlensed.T[2][2:501])),
+        'cl_bb_unlensed': bb_unlensed.T[2][2:501],
         'pk_k': K_VALS,
         'pk_nonlinear': pk_nonlin,
         'pk_linear': pk_lin,
@@ -664,6 +707,8 @@ def compute_camb_observables(p: Dict[str, float]) -> Dict[str, np.ndarray]:
         'background_z': Z_BG,
         'background_Hz': H_camb,
         'background_DAz': DA_camb,
+        'scale_independent_growth_factor': growth_factor,
+        'scale_independent_growth_rate': growth_rate,
         'derived_theta_star': derived_dict['theta_star'],
         'derived_sigma8': derived_dict['sigma8'],
         'derived_YHe': derived_dict['YHe'],
@@ -770,9 +815,9 @@ def run_single_batch(config: SamplerConfig, batch_idx: int) -> None:
 
         # --- Save results
         set_idx = set_counter + 1
-        save_parameters(batch_dir / f"set_{set_idx:02d}_params_true", params32)
-        save_npz(batch_dir / f"set_{set_idx:02d}_class_true", class_data)
-        save_npz(batch_dir / f"set_{set_idx:02d}_camb_true", camb_data)
+        save_parameters(batch_dir / f"set_{set_idx:02d}_params", params32)
+        save_npz(batch_dir / f"set_{set_idx:02d}_class", class_data)
+        save_npz(batch_dir / f"set_{set_idx:02d}_camb", camb_data)
         print(f"[Batch {batch_idx}, Set {set_idx}] Saved successfully.")
         set_counter += 1
         
@@ -802,7 +847,7 @@ def parse_args() -> SamplerConfig:
     parser.add_argument(
         '--yaml-file',
         type=Path,
-        default='/home/jam249/rds/rds-dirac-dp002/jam249/Neural-Net-Emulator-for-Cosmological-Observables/Data-Generation/Parallel-Data-Gen/parameter-ranges-true.yaml',
+        default='/home/jam249/rds/rds-dirac-dp002/jam249/Neural-Net-Emulator-for-Cosmological-Observables/Data-Generation/Parallel-Data-Gen/parameter-ranges-test.yaml',
         help='Cobaya YAML file used to define cosmological parameter priors.'
     )
     parser.add_argument(
