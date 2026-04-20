@@ -4,6 +4,8 @@ This project develops my Master's project to emulate more cosmological observabl
 
 This will contain a set of neural networks (MLP architecture) in JAX for rapid emulation of comsological observables for use in cosmological parameter inference. The observables from CAMB and CLASS are saved in float32 in .npz files.
 
+We use precision parameters from [this dr6 paper](https://arxiv.org/pdf/2503.14454) appendix A. Please check carefully. 
+
 The observables that are emulated are:
 
 # Emulated Observables
